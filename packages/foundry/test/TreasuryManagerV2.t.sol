@@ -484,10 +484,10 @@ contract TreasuryManagerV2Test is Test {
         vm.prank(operator);
         treasury.executeEmergencyAction(address(token), TreasuryManagerV2.ActionType.Burn, maxAllowed);
 
-        // Trying more should revert
+        // Trying any more should revert (cumulative tracking)
         vm.prank(operator);
         vm.expectRevert(abi.encodeWithSelector(TreasuryManagerV2.EmergencyAllowanceExceeded.selector, maxAllowed + 1, maxAllowed));
-        treasury.executeEmergencyAction(address(token), TreasuryManagerV2.ActionType.Burn, maxAllowed + 1);
+        treasury.executeEmergencyAction(address(token), TreasuryManagerV2.ActionType.Burn, 1);
     }
 
     function test_emergencyAction_revertsBeforeDay1() public {
@@ -497,6 +497,7 @@ contract TreasuryManagerV2Test is Test {
         treasury.triggerEmergency(address(token));
 
         // Don't warp — elapsed = 0, elapsedDays = 0, maxAllowed = 0
+        // Cumulative used (0) + amount (1) = 1 > maxAllowed (0)
         vm.prank(operator);
         vm.expectRevert(abi.encodeWithSelector(TreasuryManagerV2.EmergencyAllowanceExceeded.selector, 1, 0));
         treasury.executeEmergencyAction(address(token), TreasuryManagerV2.ActionType.Burn, 1);
@@ -565,6 +566,36 @@ contract TreasuryManagerV2Test is Test {
         // Day 5
         vm.warp(block.timestamp + 3 days);
         assertEq(treasury.getEmergencyAllowance(address(token)), (snapshotBalance * 5) / 25);
+    }
+
+    function test_emergencyAction_cumulativeTracking() public {
+        _setupToken();
+        uint256 snapshotBalance = token.balanceOf(address(treasury));
+
+        vm.prank(owner);
+        treasury.triggerEmergency(address(token));
+
+        // Warp 2 days — maxAllowed = snapshotBalance * 2 / 25
+        vm.warp(block.timestamp + 2 days);
+        uint256 maxAllowed = (snapshotBalance * 2) / 25;
+
+        // Use half
+        uint256 halfAllowed = maxAllowed / 2;
+        vm.prank(operator);
+        treasury.executeEmergencyAction(address(token), TreasuryManagerV2.ActionType.Burn, halfAllowed);
+
+        // Use most of the remaining
+        vm.prank(operator);
+        treasury.executeEmergencyAction(address(token), TreasuryManagerV2.ActionType.Burn, halfAllowed);
+
+        // Should have no allowance left
+        uint256 remaining = treasury.getEmergencyAllowance(address(token));
+        assertEq(remaining, 0);
+
+        // Any more should fail
+        vm.prank(operator);
+        vm.expectRevert();
+        treasury.executeEmergencyAction(address(token), TreasuryManagerV2.ActionType.Burn, 1);
     }
 
     // ─── TWAP Circuit Breaker Tests ──────────────────────────────────────

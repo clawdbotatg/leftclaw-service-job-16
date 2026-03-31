@@ -78,6 +78,7 @@ contract TreasuryManagerV2 is Ownable, ReentrancyGuard {
     // Emergency state per token
     mapping(address => EmergencyState) public emergencyStates;
     mapping(address => uint256) public emergencyTriggerSnapshotBalance;
+    mapping(address => uint256) public emergencyAmountUsed; // Cumulative amount used in emergency
 
     // ─── Events ──────────────────────────────────────────────────────────
     event OperatorUpdated(address indexed oldOperator, address indexed newOperator);
@@ -106,6 +107,7 @@ contract TreasuryManagerV2 is Ownable, ReentrancyGuard {
         uint256 maxAllowed
     );
     event EmergencyDeactivated(address indexed token);
+    event TokenPoolUpdated(address indexed token, address pool, uint32 twapInterval);
     event ETHWithdrawn(address indexed to, uint256 amount);
     event TokenWithdrawn(address indexed token, address indexed to, uint256 amount);
 
@@ -225,6 +227,7 @@ contract TreasuryManagerV2 is Ownable, ReentrancyGuard {
     function setTokenPool(address token, address pool, uint32 twapInterval) external onlyOwner tokenEnabled(token) {
         tokenConfigs[token].pool = pool;
         tokenConfigs[token].twapInterval = twapInterval;
+        emit TokenPoolUpdated(token, pool, twapInterval);
     }
 
     /// @notice Withdraw ETH (owner only)
@@ -316,6 +319,7 @@ contract TreasuryManagerV2 is Ownable, ReentrancyGuard {
             active: true
         });
         emergencyTriggerSnapshotBalance[token] = balance;
+        emergencyAmountUsed[token] = 0;
 
         emit EmergencyTriggered(token, balance, block.timestamp);
     }
@@ -353,7 +357,11 @@ contract TreasuryManagerV2 is Ownable, ReentrancyGuard {
         // = snapshotBalance × elapsedDays / 25
         uint256 maxAllowed = (snapshotBalance * elapsedDays) / 25;
 
-        if (amount > maxAllowed) revert EmergencyAllowanceExceeded(amount, maxAllowed);
+        // Track cumulative usage
+        uint256 totalUsedAfter = emergencyAmountUsed[token] + amount;
+        if (totalUsedAfter > maxAllowed) revert EmergencyAllowanceExceeded(totalUsedAfter, maxAllowed);
+
+        emergencyAmountUsed[token] = totalUsedAfter;
 
         // No cooldown check, no daily caps, no TWAP check in emergency
         // Update last action time for tracking
@@ -421,7 +429,7 @@ contract TreasuryManagerV2 is Ownable, ReentrancyGuard {
         return config.dailyUGas - usage.gasUsed;
     }
 
-    /// @notice Get the emergency allowance for a token
+    /// @notice Get the remaining emergency allowance for a token
     function getEmergencyAllowance(address token) public view returns (uint256) {
         EmergencyState storage es = emergencyStates[token];
         if (!es.active) return 0;
@@ -432,7 +440,10 @@ contract TreasuryManagerV2 is Ownable, ReentrancyGuard {
             elapsedDays = EMERGENCY_VESTING_DAYS;
         }
 
-        return (emergencyTriggerSnapshotBalance[token] * elapsedDays) / 25;
+        uint256 totalAllowed = (emergencyTriggerSnapshotBalance[token] * elapsedDays) / 25;
+        uint256 used = emergencyAmountUsed[token];
+        if (used >= totalAllowed) return 0;
+        return totalAllowed - used;
     }
 
     /// @notice Get time remaining until cooldown ends
